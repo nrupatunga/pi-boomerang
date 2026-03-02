@@ -28,7 +28,11 @@ An inverted [D-Mail](https://steins-gate.fandom.com/wiki/D-Mail): where D-Mail r
 
 ## Install
 
-Already installed at `~/.pi/agent/extensions/boomerang/`. Restart pi to load.
+```bash
+pi install pi-boomerang
+```
+
+Then restart pi to load the extension.
 
 ## Quick Start
 
