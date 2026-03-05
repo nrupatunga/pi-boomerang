@@ -615,10 +615,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (lastAssistantText) {
-      const cleaned = lastAssistantText.replace(/\n+/g, " ").trim();
-      const truncated = cleaned.slice(0, 500);
-      const ellipsis = cleaned.length > 500 ? "..." : "";
-      summary += `\nOutcome: ${truncated}${ellipsis}`;
+      const cleaned = lastAssistantText.trim();
+      const truncated = cleaned.slice(0, 1000);
+      const ellipsis = cleaned.length > 1000 ? "..." : "";
+      summary += `\n\nOutcome:\n${truncated}${ellipsis}`;
     } else if (actionParts.length === 0 && configParts.length === 0) {
       summary += `\nResult: No output recorded.`;
     }
