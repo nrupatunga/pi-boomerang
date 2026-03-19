@@ -15,7 +15,7 @@ vi.mock("node:os", async () => {
   };
 });
 
-import boomerangExtension, { getEffectiveArgs, parseChain, extractLoopCount, didIterationMakeChanges } from "./index.js";
+import boomerangExtension, { getEffectiveArgs, parseChain, extractRethrow } from "./index.js";
 
 describe("parseChain", () => {
   it("parses basic chains", () => {
@@ -67,6 +67,79 @@ describe("parseChain", () => {
   });
 });
 
+describe("extractRethrow", () => {
+  it("extracts a valid --rethrow count", () => {
+    expect(extractRethrow("/task --rethrow 3")).toEqual({
+      task: "/task",
+      rethrowCount: 3,
+    });
+  });
+
+  it("returns null when no --rethrow flag is present", () => {
+    expect(extractRethrow("/task")).toBeNull();
+  });
+
+  it("returns empty task when only --rethrow metadata is provided", () => {
+    expect(extractRethrow("--rethrow 3")).toEqual({
+      task: "",
+      rethrowCount: 3,
+    });
+  });
+
+  it("returns error signal when --rethrow count is missing", () => {
+    expect(extractRethrow("/task --rethrow")).toEqual({
+      task: "/task",
+      rethrowCount: 0,
+    });
+  });
+
+  it("returns error signal when --rethrow count is zero", () => {
+    expect(extractRethrow("/task --rethrow 0")).toEqual({
+      task: "/task 0",
+      rethrowCount: 0,
+    });
+  });
+
+  it("returns error signal when --rethrow count is greater than 999", () => {
+    expect(extractRethrow("/task --rethrow 1000")).toEqual({
+      task: "/task 1000",
+      rethrowCount: 0,
+    });
+  });
+
+  it("preserves quoted args while consuming --rethrow", () => {
+    expect(extractRethrow('/task "fix auth bug" --rethrow 2')).toEqual({
+      task: '/task "fix auth bug"',
+      rethrowCount: 2,
+    });
+  });
+
+  it("preserves inner spacing inside quoted args", () => {
+    expect(extractRethrow('/task "fix   auth   bug" --rethrow 2')).toEqual({
+      task: '/task "fix   auth   bug"',
+      rethrowCount: 2,
+    });
+  });
+
+  it("respects -- separator and preserves global args", () => {
+    expect(extractRethrow('/a -> /b --rethrow 2 -- "global arg"')).toEqual({
+      task: '/a -> /b -- "global arg"',
+      rethrowCount: 2,
+    });
+  });
+
+  it("does not consume --rethrow after standalone --", () => {
+    expect(extractRethrow("/task -- --rethrow 2")).toBeNull();
+  });
+
+  it("does not consume --loop/--fresh/--no-converge tokens", () => {
+    expect(extractRethrow("/task --loop 5 --fresh --no-converge --rethrow 2")).toEqual({
+      task: "/task --loop 5 --fresh --no-converge",
+      rethrowCount: 2,
+    });
+  });
+});
+
 describe("getEffectiveArgs", () => {
   it("uses step args when present", () => {
     const step = { templateRef: "x", template: { content: "", models: [] }, args: ["a", "b"] };
@@ -79,197 +152,6 @@ describe("getEffectiveArgs", () => {
   });
 });
 
-describe("extractLoopCount", () => {
-  it("parses simple loop count", () => {
-    expect(extractLoopCount("/task 5x")).toEqual({ task: "/task", loopCount: 5, converge: false });
-  });
-
-  it("parses loop count with --converge", () => {
-    expect(extractLoopCount("/task 5x --converge")).toEqual({ task: "/task", loopCount: 5, converge: true });
-  });
-
-  it("parses --converge and loop count in any order", () => {
-    expect(extractLoopCount("/task --converge 5x")).toEqual({ task: "/task", loopCount: 5, converge: true });
-  });
-
-  it("preserves chain global args after --", () => {
-    expect(extractLoopCount('/a -> /b 2x -- "task"')).toEqual({
-      task: '/a -> /b -- "task"',
-      loopCount: 2,
-      converge: false,
-    });
-  });
-
-  it("does not parse --converge from global args segment", () => {
-    expect(extractLoopCount("/task 5x -- --converge arg")).toEqual({
-      task: "/task -- --converge arg",
-      loopCount: 5,
-      converge: false,
-    });
-  });
-
-  it("does not consume quoted loop count tokens", () => {
-    expect(extractLoopCount('/task "3x" 5x')).toEqual({
-      task: '/task "3x"',
-      loopCount: 5,
-      converge: false,
-    });
-  });
-
-  it("handles both single and double quotes", () => {
-    expect(extractLoopCount("/task '3x' 5x")).toEqual({
-      task: "/task '3x'",
-      loopCount: 5,
-      converge: false,
-    });
-  });
-
-  it("does not parse non-standalone Nx tokens", () => {
-    expect(extractLoopCount("/task fix5x")).toBeNull();
-  });
-
-  it("returns null for no loop count", () => {
-    expect(extractLoopCount("/task")).toBeNull();
-  });
-
-  it("rejects 0x", () => {
-    expect(extractLoopCount("task 0x")).toBeNull();
-  });
-
-  it("rejects >999 iterations", () => {
-    expect(extractLoopCount("task 1000x")).toBeNull();
-  });
-
-  it("rejects x5 format", () => {
-    expect(extractLoopCount("task x5")).toBeNull();
-  });
-
-  it("handles multiple spaces around tokens", () => {
-    expect(extractLoopCount("/task  5x  --converge")).toEqual({
-      task: "/task",
-      loopCount: 5,
-      converge: true,
-    });
-  });
-});
-
-describe("didIterationMakeChanges", () => {
-  it("returns true for write tool call", () => {
-    const entries: SessionEntry[] = [
-      {
-        id: "e1",
-        type: "message",
-        message: {
-          role: "assistant",
-          content: [{ type: "toolCall", name: "write", arguments: { path: "file.ts" } }],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-    expect(didIterationMakeChanges(entries)).toBe(true);
-  });
-
-  it("returns true for edit tool call", () => {
-    const entries: SessionEntry[] = [
-      {
-        id: "e1",
-        type: "message",
-        message: {
-          role: "assistant",
-          content: [{ type: "toolCall", name: "edit", arguments: { path: "file.ts" } }],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-    expect(didIterationMakeChanges(entries)).toBe(true);
-  });
-
-  it("returns false for read tool call only", () => {
-    const entries: SessionEntry[] = [
-      {
-        id: "e1",
-        type: "message",
-        message: {
-          role: "assistant",
-          content: [{ type: "toolCall", name: "read", arguments: { path: "file.ts" } }],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-    expect(didIterationMakeChanges(entries)).toBe(false);
-  });
-
-  it("returns false for bash tool call only", () => {
-    const entries: SessionEntry[] = [
-      {
-        id: "e1",
-        type: "message",
-        message: {
-          role: "assistant",
-          content: [{ type: "toolCall", name: "bash", arguments: {} }],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-    expect(didIterationMakeChanges(entries)).toBe(false);
-  });
-
-  it("returns false for empty entries", () => {
-    expect(didIterationMakeChanges([])).toBe(false);
-  });
-
-  it("returns true for mixed read and edit", () => {
-    const entries: SessionEntry[] = [
-      {
-        id: "e1",
-        type: "message",
-        message: {
-          role: "assistant",
-          content: [{ type: "toolCall", name: "read", arguments: { path: "file.ts" } }],
-        },
-        timestamp: new Date().toISOString(),
-      },
-      {
-        id: "e2",
-        type: "message",
-        message: {
-          role: "assistant",
-          content: [{ type: "toolCall", name: "edit", arguments: { path: "file.ts" } }],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-    expect(didIterationMakeChanges(entries)).toBe(true);
-  });
-
-  it("ignores non-message entries", () => {
-    const entries: SessionEntry[] = [
-      {
-        id: "e1",
-        type: "branch_summary",
-        summary: "test",
-        timestamp: new Date().toISOString(),
-      } as any,
-    ];
-    expect(didIterationMakeChanges(entries)).toBe(false);
-  });
-
-  it("ignores non-assistant messages", () => {
-    const entries: SessionEntry[] = [
-      {
-        id: "e1",
-        type: "message",
-        message: {
-          role: "user",
-          content: [{ type: "text", text: "test" }],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-    expect(didIterationMakeChanges(entries)).toBe(false);
-  });
-});
-
 describe("Boomerang Extension", () => {
   let tempRoot: string;
   let homeDir: string;
@@ -278,6 +160,7 @@ describe("Boomerang Extension", () => {
   let currentLeafId: string | null;
   let currentModel: { provider: string; id: string };
   let currentThinking: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  let agentIdle: boolean;
   let allModels: { provider: string; id: string }[];
   let availableModels: { provider: string; id: string }[];
   let switchFailures: Set<string>;
@@ -299,6 +182,7 @@ describe("Boomerang Extension", () => {
     theme: { fg: (color: string, text: string) => string };
   };
   let isIdleMock: ReturnType<typeof vi.fn>;
+  let waitForIdleMock: ReturnType<typeof vi.fn>;
   let mockPi: ExtensionAPI;
   let mockCtx: ExtensionContext;
   let mockCommandCtx: ExtensionCommandContext;
@@ -349,6 +233,12 @@ describe("Boomerang Extension", () => {
   function writePrompt(scope: "user" | "project", ref: string, content: string) {
     const filePath = promptPath(scope, ref);
     writeFile(filePath, content);
+    return filePath;
+  }
+
+  function makeUnreadablePrompt(scope: "user" | "project", ref: string) {
+    const filePath = promptPath(scope, ref);
+    mkdirSync(filePath, { recursive: true });
     return filePath;
   }
 
@@ -430,6 +320,7 @@ describe("Boomerang Extension", () => {
       },
       modelRegistry: mockCtx.modelRegistry,
       isIdle: isIdleMock,
+      waitForIdle: waitForIdleMock,
       sessionManager: mockCtx.sessionManager,
       navigateTree,
       ...overrides,
@@ -449,6 +340,7 @@ describe("Boomerang Extension", () => {
   }
 
   async function triggerAgentEnd(ctx: ExtensionContext = mockCtx) {
+    agentIdle = true;
     const handler = getHandler("agent_end");
     if (handler) {
       await handler({}, ctx);
@@ -479,7 +371,7 @@ describe("Boomerang Extension", () => {
     sessionEntries = [];
     navigateTreeCalls = [];
     branchWithSummaryCalls = [];
-    capturedSummary = null;
+    capturedSummary = undefined;
     setModelCalls = [];
     setThinkingCalls = [];
     switchFailures = new Set();
@@ -508,7 +400,11 @@ describe("Boomerang Extension", () => {
       theme: { fg: (color: string, text: string) => `[${color}]${text}` },
     };
 
-    isIdleMock = vi.fn(() => true);
+    agentIdle = true;
+    isIdleMock = vi.fn(() => agentIdle);
+    waitForIdleMock = vi.fn(async () => {
+      agentIdle = true;
+    });
 
     mockCtx = {
       hasUI: true,
@@ -548,6 +444,7 @@ describe("Boomerang Extension", () => {
       registerCommand: vi.fn((name: string, options: { description: string; handler: Function }) => commands.set(name, options)),
       registerTool: vi.fn((tool: { name: string; execute: Function }) => tools.set(tool.name, tool)),
       sendUserMessage: vi.fn((content: string) => {
+        agentIdle = false;
         sentMessages.push(content);
         addSessionEntry({
           type: "message",
@@ -639,6 +536,18 @@ describe("Boomerang Extension", () => {
       expect(uiMock.notify).toHaveBeenCalledWith('Template "nonexistent" not found', "error");
       expect(sentMessages).toEqual([]);
     });
+
+    it("preserves template read errors instead of reporting not found", async () => {
+      makeUnreadablePrompt("project", "broken-template");
+
+      await runBoomerang("/broken-template");
+
+      expect(notifyMessages().some(({ message, level }) =>
+        level === "error" && message.startsWith('Failed to read template "broken-template":')
+      )).toBe(true);
+      expect(notifyMessages().some(({ message }) => message === 'Template "broken-template" not found')).toBe(false);
+      expect(sentMessages).toEqual([]);
+    });
   });
 
   describe("chain execution", () => {
@@ -652,6 +561,20 @@ describe("Boomerang Extension", () => {
       expect(navigateTreeCalls).toHaveLength(0);
     });
 
+    it("preserves template read errors in chain validation", async () => {
+      writePrompt("user", "exists", "Exists: $@");
+      makeUnreadablePrompt("project", "broken-template");
+
+      await runBoomerang("/exists -> /broken-template -- task");
+
+      expect(notifyMessages().some(({ message, level }) =>
+        level === "error" && message.startsWith('Failed to read template "broken-template":')
+      )).toBe(true);
+      expect(notifyMessages().some(({ message }) => message === 'Template "broken-template" not found')).toBe(false);
+      expect(sentMessages).toEqual([]);
+      expect(navigateTreeCalls).toHaveLength(0);
+    });
+
     it("sends messages in step order with effective args", async () => {
       writePrompt("user", "step1", "S1: $@");
       writePrompt("user", "step2", "S2: $@");
@@ -659,8 +582,25 @@ describe("Boomerang Extension", () => {
       await runBoomerang('/step1 "first" -> /step2 -- "fallback"');
       expect(sentMessages[0]).toBe("S1: first");
 
+      addAssistantTextEntry("Step 1 done");
       await triggerAgentEnd();
       expect(sentMessages[1]).toBe("S2: fallback");
+    });
+
+    it("does not advance chain steps before the assistant responds", async () => {
+      writePrompt("user", "step1", "Step 1");
+      writePrompt("user", "step2", "Step 2");
+
+      await runBoomerang("/step1 -> /step2 -- task");
+      await triggerAgentEnd();
+
+      expect(sentMessages).toEqual(["Step 1"]);
+      expect(navigateTreeCalls).toHaveLength(0);
+
+      addAssistantTextEntry("Step 1 done");
+      await triggerAgentEnd();
+
+      expect(sentMessages).toEqual(["Step 1", "Step 2"]);
     });
 
     it("collapses only after the last chain step", async () => {
@@ -669,10 +609,12 @@ describe("Boomerang Extension", () => {
 
       await runBoomerang("/step1 -> /step2 -- task");
 
+      addAssistantTextEntry("Step 1 done");
       await triggerAgentEnd();
       expect(navigateTreeCalls).toHaveLength(0);
       expect(sentMessages).toHaveLength(2);
 
+      addAssistantTextEntry("Step 2 done");
       await triggerAgentEnd();
       expect(navigateTreeCalls).toHaveLength(1);
     });
@@ -683,7 +625,9 @@ describe("Boomerang Extension", () => {
       writePrompt("user", "step2", "---\nmodel: claude-sonnet-4-20250514\n---\nStep two");
 
       await runBoomerang("/step1 -> /step2 -- task");
+      addAssistantTextEntry("Step 1 done");
       await triggerAgentEnd();
+      addAssistantTextEntry("Step 2 done");
       await triggerAgentEnd();
 
       expect(setModelCalls).toContain("anthropic/claude-opus-4-6");
@@ -786,6 +730,7 @@ describe("Boomerang Extension", () => {
       writePrompt("user", "commit", "---\nmodel: claude-opus-4-6\n---\nCommit $@");
 
       await runBoomerang("/commit fix auth");
+      addAssistantTextEntry("Done.");
       await triggerAgentEnd();
 
       expect(currentModel).toEqual(model("anthropic", "current-model"));
@@ -800,6 +745,19 @@ describe("Boomerang Extension", () => {
 
       expect(currentModel).toEqual(model("anthropic", "current-model"));
       expect(uiMock.notify).toHaveBeenCalledWith("Restored to current-model", "info");
+    });
+
+    it("warns when restoring previous model fails", async () => {
+      writePrompt("user", "commit", "---\nmodel: claude-opus-4-6\n---\nCommit $@");
+
+      await runBoomerang("/commit fix auth");
+      switchFailures.add("anthropic/current-model");
+      addAssistantTextEntry("Done.");
+      await triggerAgentEnd();
+
+      expect(currentModel).toEqual(model("anthropic", "claude-opus-4-6"));
+      expect(uiMock.notify).toHaveBeenCalledWith("Failed to restore model:anthropic/current-model", "warning");
+      expect(notifyMessages().some(({ message }) => message === "Restored to current-model")).toBe(false);
     });
 
     it("falls back to the next model when the first switch fails", async () => {
@@ -834,6 +792,7 @@ describe("Boomerang Extension", () => {
       writePrompt("user", "commit", "---\nmodel: claude-opus-4-6\n---\nCommit $@");
 
       await runBoomerang("/commit fix auth");
+      addAssistantTextEntry("Done.");
       await triggerAgentEnd();
 
       expect(setModelCalls).toEqual([]);
@@ -866,14 +825,16 @@ describe("Boomerang Extension", () => {
       expect(result.systemPrompt).not.toContain("<skill");
     });
 
-    it("warns and continues when a skill file cannot be read", async () => {
+    it("warns and preserves details when a skill file cannot be read", async () => {
       writePrompt("user", "commit", "---\nskill: broken-skill\n---\nCommit $@");
       makeUnreadableSkill("project", "broken-skill");
 
       await runBoomerang("/commit fix auth");
       const result = await fireBeforeAgentStart();
 
-      expect(uiMock.notify).toHaveBeenCalledWith('Failed to read skill "broken-skill"', "warning");
+      expect(notifyMessages().some(({ message, level }) =>
+        level === "warning" && message.startsWith('Failed to read skill "broken-skill":')
+      )).toBe(true);
       expect(sentMessages).toEqual(["Commit fix auth"]);
       expect(result.systemPrompt).not.toContain("<skill");
     });
@@ -893,6 +854,7 @@ describe("Boomerang Extension", () => {
       writePrompt("user", "deep-dive", "---\nthinking: xhigh\n---\nInspect $@");
 
       await runBoomerang("/deep-dive auth");
+      addAssistantTextEntry("Done.");
       await triggerAgentEnd();
 
       expect(currentThinking).toBe("low");
@@ -914,6 +876,7 @@ describe("Boomerang Extension", () => {
       writePrompt("user", "deep-dive", "---\nthinking: high\n---\nInspect $@");
 
       await runBoomerang("/deep-dive auth");
+      addAssistantTextEntry("Done.");
       await triggerAgentEnd();
 
       expect(setThinkingCalls).toEqual([]);
@@ -946,6 +909,14 @@ describe("Boomerang Extension", () => {
       expect(sentMessages).toEqual(["Args: alpha beta"]);
     });
 
+    it("supports @$ alias for all arguments", async () => {
+      writePrompt("user", "args", "Args: @$");
+
+      await runBoomerang("/args alpha beta");
+
+      expect(sentMessages).toEqual(["Args: alpha beta"]);
+    });
+
     it("preserves quoted arguments", async () => {
       writePrompt("user", "args", "$1|$2|$3");
 
@@ -966,9 +937,9 @@ describe("Boomerang Extension", () => {
   describe("summary generation", () => {
     it("uses the template reference instead of the expanded content in the summary", async () => {
       writePrompt("user", "review", "Expanded prompt body");
-      addAssistantToolEntry("edit", "src/auth.ts");
 
       await runBoomerang("/review");
+      addAssistantToolEntry("edit", "src/auth.ts");
       await triggerAgentEnd();
 
       expect(capturedSummary.summary.summary).toContain('Task: "/review"');
@@ -979,6 +950,7 @@ describe("Boomerang Extension", () => {
       writePrompt("user", "commit", "Commit $@");
 
       await runBoomerang("/commit fix the bug");
+      addAssistantTextEntry("Done.");
       await triggerAgentEnd();
 
       expect(capturedSummary.summary.summary).toContain('Task: "/commit fix the bug"');
@@ -1030,110 +1002,485 @@ describe("Boomerang Extension", () => {
       expect(capturedSummary.summary.summary).toContain("skill: git-workflow");
     });
 
-    it("includes loop iteration info in header when loopInfo is provided", async () => {
-      await runBoomerang("test task");
-      addAssistantTextEntry("Completed.");
-      addAssistantToolEntry("edit", "test.ts");
-      await triggerAgentEnd();
+    it("preserves raw quoted template args in rethrow summaries", async () => {
+      writePrompt("user", "task", "Task $@");
 
-      // Verify the basic header format works
-      expect(capturedSummary.summary.summary).toContain("[BOOMERANG COMPLETE]");
-      expect(capturedSummary.summary.summary).toContain('Task: "test task"');
+      await runBoomerang('/task "fix auth bug" --rethrow 1');
+
+      expect(capturedSummary?.summary.summary).toContain('Task: "/task "fix auth bug""');
+      expect(capturedSummary?.summary.summary).toContain("[BOOMERANG COMPLETE - RETHROW 1/1]");
     });
 
-    it("produces correct header format [BOOMERANG COMPLETE - LOOP N/M] when loopInfo is provided", async () => {
-      // This test verifies that when a loop is active, the header format changes
-      // The actual loopState assignment happens in task-4, but we can verify
-      // the generateSummaryFromEntries function accepts the loopInfo parameter
-      // and produces the correct format via integration tests in task-5
-      expect(true).toBe(true);
-    });
-
-    it("maintains backward compatibility: generateSummaryFromEntries without loopInfo uses original header", async () => {
-      await runBoomerang("backward compat test");
+    it("non-rethrow boomerangs use [BOOMERANG COMPLETE] header without RETHROW label", async () => {
+      await runBoomerang("some task");
       addAssistantTextEntry("Done.");
       await triggerAgentEnd();
 
-      // Verify original behavior still works
       expect(capturedSummary.summary.summary).toContain("[BOOMERANG COMPLETE]");
-      expect(capturedSummary.summary.summary).not.toContain("LOOP");
+      expect(capturedSummary.summary.summary).not.toContain("RETHROW");
     });
   });
 
-  describe("loop-aware summary accumulation", () => {
-    it("didIterationMakeChanges returns true when entries contain write calls", () => {
-      const entriesWithWrites: SessionEntry[] = [
-        {
-          id: "entry-1",
-          type: "message",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "toolCall", name: "write", arguments: { path: "test.ts" } },
-            ],
-          },
-          timestamp: new Date().toISOString(),
-        },
-      ];
-      
-      expect(didIterationMakeChanges(entriesWithWrites)).toBe(true);
+  describe("rethrow command handler", () => {
+    it("runs template rethrows with --rethrow N", async () => {
+      writePrompt("user", "task", "Task content");
+
+      await runBoomerang("/task --rethrow 2");
+
+      expect(sentMessages).toEqual(["Task content", "Task content"]);
+      expect(navigateTreeCalls).toHaveLength(2);
+      expect(uiMock.notify).toHaveBeenCalledWith("Rethrow started: 2 iterations", "info");
+      expect(uiMock.notify).toHaveBeenCalledWith("Rethrow complete: 2/2", "info");
     });
 
-    it("didIterationMakeChanges returns true when entries contain edit calls", () => {
-      const entriesWithEdits: SessionEntry[] = [
-        {
-          id: "entry-1",
-          type: "message",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "toolCall", name: "edit", arguments: { path: "test.ts" } },
-            ],
-          },
-          timestamp: new Date().toISOString(),
-        },
-      ];
-      
-      expect(didIterationMakeChanges(entriesWithEdits)).toBe(true);
+    it("treats --loop N as a rethrow alias for boomerang templates", async () => {
+      writePrompt("user", "task", "Task $@");
+
+      await runBoomerang("/task fix auth --loop 2");
+
+      expect(sentMessages).toEqual(["Task fix auth", "Task fix auth"]);
+      expect(navigateTreeCalls).toHaveLength(2);
+      expect(sentMessages.every((msg) => !msg.includes("--loop"))).toBe(true);
+      expect(uiMock.notify).toHaveBeenCalledWith("Mapped --loop to boomerang --rethrow 2.", "info");
     });
 
-    it("didIterationMakeChanges returns false when entries contain only reads", () => {
-      const entriesWithReads: SessionEntry[] = [
-        {
-          id: "entry-1",
-          type: "message",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "toolCall", name: "read", arguments: { path: "test.ts" } },
-            ],
-          },
-          timestamp: new Date().toISOString(),
-        },
-      ];
-      
-      expect(didIterationMakeChanges(entriesWithReads)).toBe(false);
+    it("strips --loop tokens when --rethrow is already set", async () => {
+      writePrompt("user", "task", "Task $@");
+
+      await runBoomerang("/task fix auth --rethrow 2 --loop 3");
+
+      expect(sentMessages).toEqual(["Task fix auth", "Task fix auth"]);
+      expect(sentMessages.every((msg) => !msg.includes("--loop"))).toBe(true);
+      expect(uiMock.notify).toHaveBeenCalledWith(
+        "Ignored --loop because --rethrow is set. Using --rethrow 2.",
+        "info"
+      );
     });
 
-    it("didIterationMakeChanges returns false when entries are empty", () => {
-      expect(didIterationMakeChanges([])).toBe(false);
+    it("strips invalid numeric --loop counts when --rethrow is already set", async () => {
+      writePrompt("user", "task", "Task $@");
+
+      await runBoomerang("/task fix auth --rethrow 2 --loop 0");
+
+      expect(sentMessages).toEqual(["Task fix auth", "Task fix auth"]);
+      expect(sentMessages.every((msg) => !msg.includes(" 0"))).toBe(true);
+      expect(uiMock.notify).toHaveBeenCalledWith(
+        "Ignored --loop because --rethrow is set. Using --rethrow 2.",
+        "info"
+      );
     });
 
-    it("user-anchor collapse still works when no loop is active (regression check)", async () => {
+    it("strips all repeated --loop tokens when --rethrow is already set", async () => {
+      writePrompt("user", "task", "Task $@");
+
+      await runBoomerang("/task fix auth --rethrow 2 --loop 0 --loop 3");
+
+      expect(sentMessages).toEqual(["Task fix auth", "Task fix auth"]);
+      expect(sentMessages.every((msg) => !msg.includes("--loop"))).toBe(true);
+      expect(sentMessages.every((msg) => !msg.includes(" 0"))).toBe(true);
+      expect(uiMock.notify).toHaveBeenCalledWith(
+        "Ignored --loop because --rethrow is set. Using --rethrow 2.",
+        "info"
+      );
+    });
+
+    it("runs chain rethrows with global args", async () => {
+      writePrompt("user", "scout", "Scout: $@");
+      writePrompt("user", "impl", "Impl: $@");
+
+      await runBoomerang('/scout -> /impl --rethrow 2 -- "task"');
+
+      expect(sentMessages).toEqual([
+        "Scout: task",
+        "Impl: task",
+        "Scout: task",
+        "Impl: task",
+      ]);
+      expect(navigateTreeCalls).toHaveLength(2);
+    });
+
+    it("runs plain task rethrows", async () => {
+      await runBoomerang("plain task --rethrow 2");
+
+      expect(sentMessages).toEqual(["plain task", "plain task"]);
+      expect(navigateTreeCalls).toHaveLength(2);
+    });
+
+    it("restores model correctly even with a stale command-context model snapshot", async () => {
+      writePrompt("user", "commit", "---\nmodel: claude-opus-4-6\n---\nCommit $@");
+      const staleCtx = createCommandCtx({
+        model: model("anthropic", "current-model"),
+      });
+
+      await runBoomerang("/commit fix auth --rethrow 1", staleCtx);
+
+      expect(currentModel).toEqual(model("anthropic", "current-model"));
+      expect(setModelCalls).toEqual([
+        "anthropic/claude-opus-4-6",
+        "anthropic/current-model",
+      ]);
+    });
+
+    it("shows usage error for --rethrow without a task", async () => {
+      await runBoomerang("--rethrow 3");
+
+      expect(sentMessages).toHaveLength(0);
+      expect(uiMock.notify).toHaveBeenCalledWith("Usage: /boomerang <task> [--rethrow N]", "error");
+    });
+
+    it("shows error for missing --rethrow count", async () => {
+      await runBoomerang("/task --rethrow");
+
+      expect(sentMessages).toHaveLength(0);
+      expect(uiMock.notify).toHaveBeenCalledWith("--rethrow requires a count (1-999)", "error");
+    });
+
+    it("shows error for missing --loop count", async () => {
+      await runBoomerang("/task --loop");
+
+      expect(sentMessages).toHaveLength(0);
+      expect(uiMock.notify).toHaveBeenCalledWith("--loop requires a count (1-999)", "error");
+    });
+
+    it("rejects malformed chain syntax after rethrow metadata is removed", async () => {
+      await runBoomerang("/task -> --rethrow 2");
+
+      expect(sentMessages).toHaveLength(0);
+      expect(uiMock.notify).toHaveBeenCalledWith(
+        "Invalid chain syntax. Use: /template [args] -> /template [args] [-- global args]",
+        "error"
+      );
+    });
+
+    it("preserves template read errors during rethrow runs", async () => {
+      makeUnreadablePrompt("project", "broken-template");
+
+      await runBoomerang("/broken-template --rethrow 2");
+
+      expect(notifyMessages().some(({ message, level }) =>
+        level === "error" && message.startsWith('Failed to read template "broken-template":')
+      )).toBe(true);
+      expect(notifyMessages().some(({ message }) => message === 'Template "broken-template" not found')).toBe(false);
+      expect(sentMessages).toEqual([]);
+      expect(navigateTreeCalls).toHaveLength(0);
+    });
+
+    it("non-rethrow command /boomerang /task still works", async () => {
+      writePrompt("user", "task", "Task content");
+      await runBoomerang("/task");
+
+      expect(sentMessages).toEqual(["Task content"]);
+      expect(uiMock.notify).toHaveBeenCalledWith("Boomerang started. Agent will work autonomously.", "info");
+    });
+  });
+
+  describe("rethrow accumulation and cleanup", () => {
+    it("user-anchor collapse still works when no rethrow is active", async () => {
       writePrompt("user", "task1", "Task 1");
-      writePrompt("user", "task2", "Task 2");
       const anchorId = currentLeafId;
 
       await runBoomerang("anchor");
       await runBoomerang("/task1");
+      addAssistantTextEntry("Task 1 done");
       await triggerAgentEnd();
-      
+
       expect(navigateTreeCalls[0].targetId).toBe(anchorId);
       expect(navigateTreeCalls.length).toBe(1);
+    });
+
+    it("clears active rethrow state on session_start", async () => {
+      writePrompt("user", "task", "Task");
+      let releaseWaitForIdle: (() => void) | null = null;
+      waitForIdleMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        releaseWaitForIdle = () => {
+          agentIdle = true;
+          resolve();
+        };
+      }));
+
+      const running = runBoomerang("/task --rethrow 2");
+      await Promise.resolve();
+      await getHandler("session_start")({}, mockCtx);
+      releaseWaitForIdle?.();
+      await running;
+
+      expect(uiMock.setStatus).toHaveBeenLastCalledWith("boomerang", undefined);
+    });
+
+    it("clears active rethrow state on /boomerang-cancel", async () => {
+      writePrompt("user", "task", "Task");
+      let releaseWaitForIdle: (() => void) | null = null;
+      waitForIdleMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        releaseWaitForIdle = () => {
+          agentIdle = true;
+          resolve();
+        };
+      }));
+
+      const running = runBoomerang("/task --rethrow 2");
+      await Promise.resolve();
+      await runCancel(mockCommandCtx);
+      releaseWaitForIdle?.();
+      await running;
+
+      expect(uiMock.notify).toHaveBeenCalledWith("Boomerang cancelled", "info");
+    });
+
+    it("accumulates rethrow summaries into a combined collapse summary", async () => {
+      writePrompt("user", "task", "Task");
+      let callCount = 0;
+      waitForIdleMock.mockImplementation(async () => {
+        callCount++;
+        addAssistantTextEntry(`iteration ${callCount}`);
+        agentIdle = true;
+      });
+
+      await runBoomerang("/task --rethrow 2");
+
+      expect(capturedSummary?.summary.summary).toContain("[BOOMERANG COMPLETE - RETHROW 1/2]");
+      expect(capturedSummary?.summary.summary).toContain("[BOOMERANG COMPLETE - RETHROW 2/2]");
+      expect(capturedSummary?.summary.summary).toContain("\n\n---\n\n");
+    });
+
+    it("uses rethrow accumulation precedence when user anchor and auto-anchor overlap", async () => {
+      writePrompt("user", "task", "Task");
+      writePrompt("user", "followup", "Follow-up");
+      let callCount = 0;
+      waitForIdleMock.mockImplementation(async () => {
+        callCount++;
+        addAssistantTextEntry(`run ${callCount}`);
+        agentIdle = true;
+      });
+
+      await runBoomerang("anchor");
+      await runBoomerang("/task --rethrow 1");
+      await runBoomerang("/followup");
+      addAssistantTextEntry("Follow-up done");
+      await triggerAgentEnd();
+
+      expect(capturedSummary?.summary.summary).not.toContain("[BOOMERANG COMPLETE - RETHROW 1/1]");
+    });
+
+    it("stops rethrows when collapse is cancelled", async () => {
+      writePrompt("user", "task", "Task");
+      const cancellingCtx = createCommandCtx({
+        navigateTree: vi.fn(async (targetId: string, options: { summarize?: boolean }) => {
+          navigateTreeCalls.push({ targetId, options });
+          return { cancelled: true };
+        }),
+      });
+
+      await runBoomerang("/task --rethrow 3", cancellingCtx);
+
+      expect(sentMessages).toHaveLength(1);
+      expect(navigateTreeCalls).toHaveLength(1);
+      expect(uiMock.notify).toHaveBeenCalledWith("Collapse cancelled", "warning");
+      expect(uiMock.setStatus).toHaveBeenLastCalledWith("boomerang", undefined);
+    });
+  });
+
+  describe("rethrow execution", () => {
+    it("runs multiple rethrows synchronously with waitForIdle", async () => {
+      writePrompt("user", "task", "Task");
+      let callCount = 0;
+      waitForIdleMock.mockImplementation(async () => {
+        callCount++;
+        addAssistantTextEntry(`done ${callCount}`);
+        agentIdle = true;
+      });
+
+      await runBoomerang("/task --rethrow 3");
+
+      expect(sentMessages).toHaveLength(3);
+      expect(navigateTreeCalls).toHaveLength(3);
+      expect(uiMock.notify).toHaveBeenCalledWith("Rethrow 1/3 collapsed", "info");
+      expect(uiMock.notify).toHaveBeenCalledWith("Rethrow 2/3 collapsed", "info");
+      expect(uiMock.notify).toHaveBeenCalledWith("Rethrow 3/3 collapsed", "info");
+      expect(uiMock.notify).toHaveBeenCalledWith("Rethrow complete: 3/3", "info");
+    });
+
+    it("supports canceling mid-rethrow", async () => {
+      writePrompt("user", "task", "Task");
+      const waitResolvers: Array<() => void> = [];
+      waitForIdleMock.mockImplementation(() => new Promise<void>((resolve) => {
+        waitResolvers.push(() => {
+          agentIdle = true;
+          resolve();
+        });
+      }));
+
+      const running = runBoomerang("/task --rethrow 3");
+      await Promise.resolve();
+      waitResolvers[0]?.();
+      while (waitResolvers.length < 2) {
+        await Promise.resolve();
+      }
+      await runCancel();
+      waitResolvers[1]?.();
+      await running;
+
+      expect(sentMessages).toHaveLength(2);
+      expect(navigateTreeCalls).toHaveLength(1);
+    });
+
+    it("stops when cancelled before a rethrow turn starts", async () => {
+      writePrompt("user", "task", "Task");
+      (mockPi.sendUserMessage as ReturnType<typeof vi.fn>).mockImplementation((content: string) => {
+        sentMessages.push(content);
+        addSessionEntry({
+          type: "message",
+          message: { role: "user", content, timestamp: Date.now() },
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      const running = runBoomerang("/task --rethrow 2");
+      await Promise.resolve();
+      await runCancel();
+
+      await Promise.race([
+        running,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for rethrow cancel")), 200)),
+      ]);
+
+      expect(navigateTreeCalls).toHaveLength(0);
+    });
+
+    it("stops immediately when cancelled during model switching", async () => {
+      writePrompt("user", "task", "---\nmodel: claude-opus-4-6\nskill: git-workflow\n---\nTask");
+      writeSkill("project", "git-workflow", "Use git skill");
+
+      let releaseModelSwitch: (() => void) | null = null;
+      (mockPi.setModel as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (nextModel: { provider: string; id: string }) => new Promise<boolean>((resolve) => {
+          setModelCalls.push(modelKey(nextModel));
+          releaseModelSwitch = () => {
+            currentModel = nextModel;
+            resolve(true);
+          };
+        })
+      );
+
+      const running = runBoomerang("/task --rethrow 2");
+      while (!releaseModelSwitch) {
+        await Promise.resolve();
+      }
+
+      await runCancel();
+      releaseModelSwitch?.();
+      await running;
+
+      expect(sentMessages).toHaveLength(0);
+      expect(navigateTreeCalls).toHaveLength(0);
+    });
+
+    it("runs all chain steps for each rethrow", async () => {
+      writePrompt("user", "scout", "Scout: $@");
+      writePrompt("user", "impl", "Impl: $@");
+
+      await runBoomerang('/scout -> /impl --rethrow 2 -- "auth module"');
+
+      expect(sentMessages).toEqual([
+        "Scout: auth module",
+        "Impl: auth module",
+        "Scout: auth module",
+        "Impl: auth module",
+      ]);
+      expect(navigateTreeCalls).toHaveLength(2);
+    });
+
+    it("agent_end is a no-op while a rethrow is active", async () => {
+      writePrompt("user", "task", "Task");
+      let releaseWaitForIdle: (() => void) | null = null;
+      waitForIdleMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        releaseWaitForIdle = () => {
+          agentIdle = true;
+          resolve();
+        };
+      }));
+
+      const running = runBoomerang("/task --rethrow 2");
+      await Promise.resolve();
+      await triggerAgentEnd();
+
+      expect(navigateTreeCalls).toHaveLength(0);
+      expect(sentMessages).toHaveLength(1);
+
+      releaseWaitForIdle?.();
+      await running;
+    });
+
+    it("reloads template content on each rethrow", async () => {
+      const templateFile = writePrompt("user", "task", "V1 $@");
+      let callCount = 0;
+      waitForIdleMock.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          writeFileSync(templateFile, "V2 $@");
+        }
+        agentIdle = true;
+      });
+
+      await runBoomerang("/task alpha --rethrow 2");
+
+      expect(sentMessages).toEqual(["V1 alpha", "V2 alpha"]);
+    });
+
+    it("injects rethrow prompt context in before_agent_start for each turn", async () => {
+      writePrompt("user", "task", "Task");
+      const prompts: string[] = [];
+      waitForIdleMock.mockImplementation(async () => {
+        const beforeStart = await fireBeforeAgentStart("original");
+        prompts.push(beforeStart?.systemPrompt ?? "original");
+        agentIdle = true;
+      });
+
+      await runBoomerang("/task --rethrow 2");
+
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain("RETHROW 1/2");
+      expect(prompts[1]).toContain("RETHROW 2/2");
     });
   });
 
   describe("integration behavior", () => {
+    it("does not collapse before the assistant responds", async () => {
+      writePrompt("user", "task", "---\nmodel: claude-opus-4-6\n---\nTask content");
+
+      await runBoomerang("/task");
+      await triggerAgentEnd();
+
+      expect(navigateTreeCalls).toHaveLength(0);
+
+      addAssistantTextEntry("Done.");
+      await triggerAgentEnd();
+
+      expect(navigateTreeCalls).toHaveLength(1);
+    });
+
+    it("waits for assistant output even if getLeafId becomes null after queueing", async () => {
+      writePrompt("user", "task", "Task content");
+      const baseSessionManager = mockCtx.sessionManager as any;
+      let leafCalls = 0;
+      const flakyCtx = createCommandCtx({
+        sessionManager: {
+          ...baseSessionManager,
+          getLeafId: () => {
+            leafCalls++;
+            return leafCalls <= 2 ? currentLeafId : null;
+          },
+        } as any,
+      });
+
+      await runBoomerang("/task", flakyCtx);
+      await triggerAgentEnd();
+      expect(navigateTreeCalls).toHaveLength(0);
+
+      addAssistantTextEntry("Done.");
+      await triggerAgentEnd();
+      expect(navigateTreeCalls).toHaveLength(1);
+    });
+
     it("works with anchor mode across multiple template tasks", async () => {
       writePrompt("user", "commit", "Commit $@");
       writePrompt("user", "code-review", "Review $@");
@@ -1141,8 +1488,10 @@ describe("Boomerang Extension", () => {
 
       await runBoomerang("anchor");
       await runBoomerang("/commit fix auth");
+      addAssistantTextEntry("Commit done");
       await triggerAgentEnd();
       await runBoomerang("/code-review auth module");
+      addAssistantTextEntry("Review done");
       await triggerAgentEnd();
       await runBoomerang("anchor show");
 
@@ -1159,6 +1508,7 @@ describe("Boomerang Extension", () => {
       writePrompt("user", "commit", "---\nmodel: claude-opus-4-6\n---\nCommit $@");
 
       await runBoomerang("/commit fix auth");
+      addAssistantTextEntry("Done.");
       await triggerAgentEnd();
 
       expect(sentMessages).toEqual(["Commit fix auth"]);
@@ -1178,6 +1528,7 @@ describe("Boomerang Extension", () => {
       });
 
       await runBoomerang("/commit fix auth", trackingCtx);
+      addAssistantTextEntry("Done.");
       await triggerAgentEnd();
 
       expect(flagDuringNavigation).toBe(true);
@@ -1195,13 +1546,155 @@ describe("Boomerang Extension", () => {
       expect(uiMock.setStatus).toHaveBeenLastCalledWith("boomerang", undefined);
       expect(uiMock.notify).toHaveBeenCalledWith("Restored to current-model, thinking:low", "info");
     });
+
+    it("keeps tool-initiated collapse flow working", async () => {
+      await runBoomerang("tool on");
+
+      const tool = getTool("boomerang");
+      await tool.execute("id-1", {}, undefined, undefined, mockCtx);
+      addAssistantTextEntry("tool work");
+      await tool.execute("id-2", {}, undefined, undefined, mockCtx);
+      await triggerAgentEnd();
+
+      expect(navigateTreeCalls).toHaveLength(1);
+      expect(navigateTreeCalls[0].options).toEqual({ summarize: true });
+    });
+
+    it("agent can queue a plain task via the tool", async () => {
+      await runBoomerang("tool on");
+
+      const tool = getTool("boomerang");
+      const result = await tool.execute("id", { task: "fix all the bugs" }, undefined, undefined, mockCtx);
+
+      expect(result.content[0].text).toContain("Task queued");
+
+      await triggerAgentEnd();
+
+      expect(sentMessages).toEqual(["fix all the bugs"]);
+      expect(navigateTreeCalls).toHaveLength(0);
+
+      addAssistantTextEntry("Fixed them.");
+      await triggerAgentEnd();
+
+      expect(navigateTreeCalls).toHaveLength(1);
+    });
+
+    it("tool-queued template tasks restore to the runtime model, not a stale stored command context model", async () => {
+      writePrompt("user", "commit", "---\nmodel: claude-opus-4-6\n---\nCommit $@");
+      const staleCtx = createCommandCtx({
+        model: model("anthropic", "snapshot-model"),
+      });
+
+      await runBoomerang("tool on", staleCtx);
+      currentModel = model("anthropic", "runtime-model");
+
+      const tool = getTool("boomerang");
+      await tool.execute("id", { task: "/commit fix auth" }, undefined, undefined, mockCtx);
+
+      await triggerAgentEnd();
+      addAssistantTextEntry("Done.");
+      await triggerAgentEnd();
+
+      expect(currentModel).toEqual(model("anthropic", "runtime-model"));
+      expect(setModelCalls).toEqual([
+        "anthropic/claude-opus-4-6",
+        "anthropic/runtime-model",
+      ]);
+    });
+
+    it("agent can queue a rethrow task via the tool", async () => {
+      writePrompt("user", "task", "Task content");
+      await runBoomerang("tool on");
+
+      const tool = getTool("boomerang");
+      const result = await tool.execute("id", { task: "/task --rethrow 2" }, undefined, undefined, mockCtx);
+
+      expect(result.content[0].text).toContain("Task queued");
+
+      await triggerAgentEnd();
+
+      expect(sentMessages).toEqual(["Task content", "Task content"]);
+      expect(uiMock.notify).toHaveBeenCalledWith("Rethrow started: 2 iterations", "info");
+      expect(uiMock.notify).toHaveBeenCalledWith("Rethrow complete: 2/2", "info");
+    });
+
+    it("agent can queue a chain rethrow task via the tool", async () => {
+      writePrompt("user", "scout", "Scout: $@");
+      writePrompt("user", "impl", "Impl: $@");
+      await runBoomerang("tool on");
+
+      const tool = getTool("boomerang");
+      const result = await tool.execute("id", { task: '/scout -> /impl --rethrow 2 -- "task"' }, undefined, undefined, mockCtx);
+
+      expect(result.content[0].text).toContain("Task queued");
+
+      await triggerAgentEnd();
+
+      expect(sentMessages).toEqual([
+        "Scout: task",
+        "Impl: task",
+        "Scout: task",
+        "Impl: task",
+      ]);
+      expect(navigateTreeCalls).toHaveLength(2);
+    });
+
+    it("agent can queue --loop alias via the tool and surfaces mapping notice", async () => {
+      writePrompt("user", "task", "Task $@");
+      await runBoomerang("tool on");
+
+      const tool = getTool("boomerang");
+      const result = await tool.execute("id", { task: "/task fix auth --loop 2" }, undefined, undefined, mockCtx);
+
+      expect(result.content[0].text).toContain("Task queued");
+
+      await triggerAgentEnd();
+
+      expect(sentMessages).toEqual(["Task fix auth", "Task fix auth"]);
+      expect(uiMock.notify).toHaveBeenCalledWith("Mapped --loop to boomerang --rethrow 2.", "info");
+    });
+
+    it("tool rejects task when boomerang is already active", async () => {
+      await runBoomerang("tool on");
+      await runBoomerang("some active task");
+
+      const tool = getTool("boomerang");
+      const result = await tool.execute("id", { task: "another task" }, undefined, undefined, mockCtx);
+
+      expect(result.content[0].text).toContain("already active");
+    });
+
+    it("boomerang-cancel clears a queued tool task", async () => {
+      await runBoomerang("tool on");
+
+      const tool = getTool("boomerang");
+      await tool.execute("id", { task: "queued task" }, undefined, undefined, mockCtx);
+      await runCancel();
+
+      await triggerAgentEnd();
+
+      expect(sentMessages).toHaveLength(0);
+    });
+
+    it("does not allow overriding an already queued tool task", async () => {
+      await runBoomerang("tool on");
+
+      const tool = getTool("boomerang");
+      const first = await tool.execute("id-1", { task: "first queued task" }, undefined, undefined, mockCtx);
+      const second = await tool.execute("id-2", { task: "second queued task" }, undefined, undefined, mockCtx);
+
+      expect(first.content[0].text).toContain("Task queued");
+      expect(second.content[0].text).toContain("already queued");
+      expect(second.isError).toBe(true);
+
+      await triggerAgentEnd();
+      expect(sentMessages).toEqual(["first queued task"]);
+    });
   });
 
   describe("tool enable and disable", () => {
-    it("keeps the tool disabled by default", async () => {
-      const result = await getTool("boomerang").execute("id", {}, undefined, undefined, mockCtx);
-
-      expect(result.content[0].text).toContain("Boomerang tool is disabled");
+    it("does not register the tool when disabled by default", async () => {
+      expect(getTool("boomerang")).toBeUndefined();
     });
 
     it("enables the tool with /boomerang tool on", async () => {
@@ -1342,6 +1835,16 @@ describe("Boomerang Extension", () => {
       expect(config.toolEnabled).toBe(true);
     });
 
+    it("surfaces config save failures instead of swallowing them", async () => {
+      writeFile(join(homeDir, ".pi"), "not-a-directory");
+
+      await runBoomerang('guidance should-warn');
+
+      expect(notifyMessages().some(({ message, level }) =>
+        level === "warning" && message.startsWith("Failed to save boomerang config:")
+      )).toBe(true);
+    });
+
     it("persists guidance to config file", async () => {
       await runBoomerang('guidance My custom guidance');
 
@@ -1362,53 +1865,4 @@ describe("Boomerang Extension", () => {
     });
   });
 
-  describe("loopState", () => {
-    it("clears loopState on session_start event", async () => {
-      const handler = getHandler("session_start");
-      expect(handler).toBeDefined();
-
-      await handler({}, mockCtx);
-      
-      expect(uiMock.setStatus).toHaveBeenCalled();
-    });
-
-    it("clears loopState on session_switch event", async () => {
-      const handler = getHandler("session_switch");
-      expect(handler).toBeDefined();
-
-      await handler({}, mockCtx);
-      
-      expect(uiMock.setStatus).toHaveBeenCalled();
-    });
-
-    it("clears loopState on /boomerang-cancel", async () => {
-      // First set up an active boomerang
-      await runBoomerang("some task");
-      uiMock.notify.mockClear();
-      
-      await runCancel(mockCommandCtx);
-
-      expect(uiMock.notify).toHaveBeenLastCalledWith("Boomerang cancelled", "info");
-    });
-
-    it("updateStatus shows 'loop X/N' when loopState is active (combined with chain)", async () => {
-      // This verifies the status formatting works correctly
-      // The actual loopState assignment happens in executeLoopIteration (task-4)
-      // Here we just verify updateStatus has the logic to format it
-      uiMock.setStatus.mockClear();
-      
-      const handler = getHandler("session_start");
-      await handler({}, mockCtx);
-
-      expect(uiMock.setStatus).toHaveBeenCalled();
-    });
-
-    it("updateStatus clears when no state is active", async () => {
-      uiMock.setStatus.mockClear();
-      
-      await getHandler("session_start")({}, mockCtx);
-      
-      expect(uiMock.setStatus).toHaveBeenCalled();
-    });
-  });
 });

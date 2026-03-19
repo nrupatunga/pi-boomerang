@@ -71,21 +71,21 @@ Each template's frontmatter controls model, skill, and thinking level for that s
 
 Status indicator shows progress as `chain 1/3`, `chain 2/3`, etc.
 
-## Loop Execution
+## Rethrow Execution
 
-Run a task multiple times with changes accumulating across iterations:
+Run the full task multiple times with context collapse between runs:
 
 ```bash
-/boomerang /deslop 5x
-/boomerang /scout -> /impl 3x -- "auth module"
-/boomerang "improve code quality" 10x --converge
+/boomerang /deslop --rethrow 3
+/boomerang "improve code quality" --rethrow 2
+/boomerang /scout -> /impl --rethrow 2 -- "auth module"
 ```
 
-Each iteration collapses back to the same anchor point. The agent sees all previous iteration summaries, so it builds on earlier work rather than starting from scratch.
+Each rethrow executes the full task, collapses to the same anchor point, and continues with fresh context plus accumulated summaries from prior rethrows.
 
-Add `--converge` to stop early when an iteration makes no file changes — useful for iterative improvement tasks that naturally converge.
+File changes persist on disk across rethrows. Boomerang consumes `--rethrow N` directly. For compatibility, `--loop N` is treated as an alias for `--rethrow N` in boomerang commands, so loop flags are not injected into the rendered prompt body. If both flags are present, `--rethrow` takes precedence and `--loop` is ignored.
 
-Status shows `loop 2/5` during execution. Cancel mid-loop with `/boomerang-cancel`.
+Status shows `rethrow 2/3` and for chain rethrows `rethrow 2/3 · chain 1/2`. Cancel mid-rethrow with `/boomerang-cancel`.
 
 ## Prompt Templates
 
@@ -129,7 +129,19 @@ Summaries accumulate, so each task's context includes what came before.
 
 ## Agent-Callable Tool
 
-The extension registers a `boomerang` tool that agents can call directly. The agent sets an anchor, does work, calls boomerang again to collapse. Useful for self-managed context without user intervention.
+When enabled, the extension registers a `boomerang` tool the agent can call directly. Two modes:
+
+**Task mode** — pass a task string and it runs autonomously when the current turn ends:
+
+```
+boomerang({ task: "refactor the auth module" })
+boomerang({ task: "/deslop --rethrow 3" })
+boomerang({ task: '/scout -> /impl -- "auth module"' })
+```
+
+Supports everything the command does: templates, chains, `--rethrow N`. The task queues and executes after the agent's current turn completes.
+
+**Anchor mode** — call with no task to toggle an anchor/collapse point. First call sets the anchor, second call collapses everything since the anchor into a summary. Useful for self-managed context without user intervention.
 
 **Disabled by default** because agents got too aggressive with it. Enable with:
 
@@ -146,18 +158,18 @@ You can provide guidance for when the agent should use it:
 
 Tool state and guidance persist to `~/.pi/agent/boomerang.json` across restarts.
 
-One quirk: tool-initiated collapse may not update the UI immediately (the context IS collapsed, agent sees it, but chat display lags until `/reload`).
+One quirk: tool-initiated anchor/collapse may not update the UI immediately (the context IS collapsed, agent sees it, but chat display lags until `/reload`).
 
 ## Commands
 
 | Command | What it does |
 |---------|--------------|
 | `/boomerang <task>` | Execute and collapse |
-| `/boomerang <task> Nx` | Run task N times with accumulating changes |
-| `/boomerang <task> Nx --converge` | Run up to N times, stop if no changes |
+| `/boomerang <task> --rethrow N` | Re-run full task N times with collapse between rethrows |
+| `/boomerang <task> --loop N` | Alias for `--rethrow N` in boomerang mode |
 | `/boomerang /<template> [args]` | Run template and collapse |
 | `/boomerang /a -> /b -> /c` | Chain templates |
-| `/boomerang /a -> /b 3x` | Chain templates, loop 3 times |
+| `/boomerang /a -> /b --rethrow 2` | Chain templates, then rethrow full chain twice |
 | `/boomerang-cancel` | Abort without collapsing |
 | `/boomerang anchor` | Set collapse point |
 | `/boomerang anchor show` | Show anchor info |

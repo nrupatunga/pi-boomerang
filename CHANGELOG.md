@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-18
+
+### Added
+
+- **`--rethrow N` syntax** — Run full multi-pass boomerang execution with context collapse between rethrows (for example `/boomerang /task --rethrow 3`)
+- **Synchronous rethrow execution model** — Rethrows run in-command via `waitForIdle`, with per-rethrow collapse and accumulated summaries
+- **Boomerang tool accepts a task parameter** — When enabled, the agent can call `boomerang({ task: "fix bugs --rethrow 3" })` to queue tasks with full rethrow/chain/template support
+
+### Changed
+
+- **Replaced loop syntax with `--rethrow N`** — The `Nx` loop syntax, convergence detection, and `--converge` flag are replaced by `--rethrow N`. Boomerang handles context collapse; pi-prompt-template-model owns inner loops via `--loop`.
+- **Boomerang tool only registered when enabled** — Tool only appears in the agent's tool list after `/boomerang tool on`
+- **`--loop N` in boomerang now maps to `--rethrow N`** — Prevents loop flags from being injected into rendered template prompts and keeps boomerang execution deterministic.
+- **Loop alias mapping is now surfaced in UI** — Boomerang shows an info notification when `--loop` is auto-mapped to `--rethrow` so execution mode is explicit.
+- **`--rethrow` now takes precedence over `--loop` when both are present** — Boomerang strips loop tokens and reports the precedence decision so loop flags never leak into rendered prompts.
+
+### Fixed
+
+- **Prevented premature collapse before agent output** — Command-mode boomerangs now wait for the queued task message to appear and for the first assistant message after that task before advancing chain steps or collapsing context, including cases where `getLeafId()` is transiently null when the task is queued.
+- **Preserved template read errors instead of downgrading to "not found"** — Template I/O failures now surface explicit `Failed to read template ...` errors in single, chain, and rethrow flows.
+- **Preserved skill read error details** — Skill load failures now include the underlying read error text (for example permissions or path/type errors) instead of a generic warning.
+- **Preserved config persistence failures** — Config save failures now warn in the UI, and config load failures are logged with full error context.
+- **Preserved model restore failures** — Restore now reports model restore failures as warnings instead of silently reporting successful restoration.
+- **Stripped invalid numeric loop counts when `--rethrow` is present** — Inputs like `--rethrow 2 --loop 0` no longer leak `0` into rendered task arguments.
+- **Stripped repeated `--loop` tokens when `--rethrow` is present** — Inputs like `--rethrow 2 --loop 0 --loop 3` now remove all loop metadata so no loop flags leak into rendered task arguments.
+- **Prevented queued-tool task overwrites** — The boomerang tool now rejects queueing a second task while one is already queued instead of silently replacing the first queued task.
+- **Model restoration no longer depends on command-context model snapshots** — Restore now uses runtime model snapshots, including tool-queued task starts, preventing stale command-context values from causing incorrect rollback targets.
+
 ## [0.3.0] - 2026-03-14
 
 ### Added
